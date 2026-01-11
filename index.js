@@ -1,17 +1,13 @@
 import { ethers } from "ethers";
 import dotenv from "dotenv";
-import { log } from "./logger.js"; // your file logger
+import { log } from "./logger.js";
 import { contractABI } from "./contractABI.js";
 
 dotenv.config();
 
-// WebSocket provider
 const provider = new ethers.WebSocketProvider(process.env.RPC_URL);
-
-// Wallet
 const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
 
-// Contract
 const FLUSH_REWARDER = "0x7c9a7130379f1b5dd6e7a53af84fc0fe32267b65";
 const flushRewarder = new ethers.Contract(
   FLUSH_REWARDER,
@@ -20,37 +16,57 @@ const flushRewarder = new ethers.Contract(
 );
 
 let sending = false;
+const SEND_TIMEOUT_MS = 8_000;
 
-// Bot start
 log("BOT_STARTED");
 console.log("BOT_STARTED");
 
-// Listen for new blocks
 provider.on("block", async (blockNumber) => {
   if (sending) return;
   sending = true;
 
+  const timeout = setTimeout(() => {
+    log("SEND_TIMEOUT_RESET");
+    console.log("SEND_TIMEOUT_RESET");
+    sending = false;
+  }, SEND_TIMEOUT_MS);
+
   try {
     const fee = await provider.getFeeData();
 
-    // Call the no-argument flushEntryQueue()
+    if (!fee.maxFeePerGas || !fee.maxPriorityFeePerGas) {
+      log("GAS_DATA_UNAVAILABLE");
+      console.log("GAS_DATA_UNAVAILABLE");
+      return;
+    }
+
+    log(`ATTEMPT_FLUSH | block ${blockNumber}`);
+    console.log(`ATTEMPT_FLUSH | block ${blockNumber}`);
+
     const tx = await flushRewarder["flushEntryQueue()"]({
       gasLimit: 250_000,
       maxFeePerGas: fee.maxFeePerGas * 2n,
       maxPriorityFeePerGas: fee.maxPriorityFeePerGas * 2n
     });
 
-    // Log both to file and console
-    const message = `FLUSH_SENT | block ${blockNumber} | tx ${tx.hash}`;
-    log(message);
-    console.log(message);
+    const msg = `FLUSH_SENT | block ${blockNumber} | tx ${tx.hash}`;
+    log(msg);
+    console.log(msg);
   } catch (e) {
-    const errorMsg = `ERROR | ${e.message}`;
-    log(errorMsg);
-    console.log(errorMsg);
+    const err = `ERROR | ${e.message}`;
+    log(err);
+    console.log(err);
   } finally {
+    clearTimeout(timeout);
     sending = false;
   }
+});
+
+// Restart bot on WS death (pm2 will restart)
+provider._websocket?.on("close", () => {
+  log("WS_CLOSED");
+  console.log("WS_CLOSED");
+  process.exit(1);
 });
 
 // Graceful shutdown
